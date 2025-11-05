@@ -105,6 +105,18 @@ class AuthManager:
     def get_user(self, username: str) -> Optional[dict]:
         """Get user info by username"""
         return self.users.get(username)
+    
+    def get_username(self, user_id: str) -> Optional[str]:
+        """
+        Get username from user_id (which in this system is the same as username)
+        
+        :param user_id: User ID to lookup
+        :return: Username/display name if found, None otherwise
+        """
+        user = self.users.get(user_id)
+        if user:
+            return user.get("display_name") or user.get("username")
+        return None
 
     def logout(self, session_id: str):
         """Remove a session"""

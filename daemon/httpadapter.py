@@ -24,10 +24,12 @@ import json
 import socket
 import hashlib
 import time
+import uuid
 from typing import Optional
 from urllib.parse import parse_qs
 from .request import Request
 from .response import Response
+from .channel import Message
 from .dictionary import CaseInsensitiveDict
 from .peer_tracker import PeerTracker
 from .channel import Channel, Message, ChannelManager
@@ -99,6 +101,23 @@ class HttpAdapter:
         #: Channel manager for chat channels (shared instance)
         self.channel_manager = _GLOBAL_CHANNEL_MANAGER
         self.auth_manager = _GLOBAL_AUTH_MANAGER
+    
+    def _get_user_from_session(self, req) -> Optional[str]:
+        """
+        Get user_id from session cookie in request
+        
+        :param req: Request object
+        :return: user_id if valid session, None otherwise
+        """
+        auth_cookie = req.cookies.get('auth')
+        if not auth_cookie:
+            return None
+        
+        session = self.auth_manager.validate_session(auth_cookie)
+        if not session:
+            return None
+        
+        return session.user_id
         
     def handle_client(self, conn: socket.socket, addr: tuple, routes: dict) -> None:
         """
@@ -217,7 +236,8 @@ class HttpAdapter:
             '/channels', '/channels/create', '/channels/join',
             '/channels/leave', '/channels/messages', '/api/check-auth', '/api/connect'
         ]
-        if req.path in chat_endpoints:
+        # Check for channel delete endpoint (starts with /channels/delete/)
+        if req.path in chat_endpoints or req.path.startswith('/channels/delete/'):
             body_obj, status_code = self.handle_chat_endpoint(req)
             # Default status and reason
             status_code = status_code or 200
@@ -388,10 +408,15 @@ class HttpAdapter:
                 session = self.auth_manager.sessions[sid]
                 created_by = data.get('createdBy', session.user_id)
 
-                # Generate unique channel ID
-                channel_id = hashlib.sha256(
-                    f"{channel_name}:{created_by}:{time.time()}".encode()
-                ).hexdigest()[:12]
+                # Generate unique channel ID (or use provided dmChannelId for DMs)
+                if 'dmChannelId' in data and data.get('isDM', False):
+                    # Use consistent ID for DM channels
+                    channel_id = data['dmChannelId']
+                else:
+                    # Generate unique ID for regular channels
+                    channel_id = hashlib.sha256(
+                        f"{channel_name}:{created_by}:{time.time()}".encode()
+                    ).hexdigest()[:12]
 
                 # Validate description length
                 description = data.get('description', '').strip()
@@ -499,6 +524,35 @@ class HttpAdapter:
                         "createdBy": channel.created_by
                     }
                 }, 200
+            
+            # Delete channel
+            if req.path.startswith('/channels/delete/') and req.method == 'DELETE':
+                # Extract channel ID from path: /channels/delete/{channelId}
+                channel_id = req.path.split('/channels/delete/')[-1]
+                
+                # Get user ID from auth session
+                sid = self._get_auth_cookie(req)
+                if not sid or not self.auth_manager.validate_session(sid):
+                    return {"error": "Unauthorized"}, 401
+                session = self.auth_manager.sessions[sid]
+                user_id = session.user_id
+
+                # Get channel
+                channel = self.channel_manager.get_channel(channel_id)
+                if not channel:
+                    return {"error": "Channel not found"}, 404
+
+                # Only creator can delete channel
+                if channel.created_by != user_id:
+                    return {"error": "Only channel creator can delete the channel"}, 403
+
+                # Delete channel
+                if self.channel_manager.delete_channel(channel_id):
+                    print(f"[Channel] Channel {channel_id} deleted by {user_id}")
+                    return {"success": True, "message": "Channel deleted successfully"}, 200
+                else:
+                    return {"error": "Failed to delete channel"}, 500
+            
             if req.path == '/api/connect' and req.method == 'GET':
                 sid = self._get_auth_cookie(req)
                 if sid and self.auth_manager.validate_session(sid):
@@ -641,17 +695,95 @@ class HttpAdapter:
                 since_ts = float(since) if since else None
                 messages = channel.get_messages(since_ts)
                 
+                # Enrich messages with sender names
+                enriched_messages = []
+                for msg in messages:
+                    # Try to get username from auth_manager
+                    username = self.auth_manager.get_username(msg.sender_id)
+                    if not username:
+                        username = msg.sender_id  # Fallback to user_id
+                    
+                    enriched_messages.append({
+                        "id": msg.id,
+                        "sender_id": msg.sender_id,
+                        "sender_name": username,
+                        "content": msg.content,
+                        "timestamp": msg.timestamp
+                    })
+                
                 return {
-                    "messages": [
-                        {
-                            "id": msg.id,
-                            "sender_id": msg.sender_id,
-                            "content": msg.content,
-                            "timestamp": msg.timestamp
-                        }
-                        for msg in messages
-                    ]
+                    "messages": enriched_messages
                 }, 200
+            
+            elif req.path == '/channels/messages' and req.method == 'POST':
+                # Send a message to a channel
+                print(f"[Channel] POST /channels/messages request")
+                
+                # Get user_id from auth session
+                user_id = self._get_user_from_session(req)
+                if not user_id:
+                    print(f"[Channel] Unauthorized message attempt")
+                    return {"error": "Unauthorized. Please login."}, 401
+                
+                try:
+                    data = json.loads(req.body)
+                except json.JSONDecodeError:
+                    return {"error": "Invalid JSON"}, 400
+                
+                # Validate input
+                channel_id = data.get('channelId') or data.get('channel_id')
+                content = data.get('message') or data.get('content')
+                
+                if not channel_id:
+                    return {"error": "Missing channelId"}, 400
+                
+                if not content or not content.strip():
+                    return {"error": "Message content cannot be empty"}, 400
+                
+                # Validate message length
+                content = content.strip()
+                if len(content) > 2000:
+                    return {"error": "Message too long (max 2000 characters)"}, 400
+                
+                # Get channel
+                channel = self.channel_manager.get_channel(channel_id)
+                if not channel:
+                    return {"error": "Channel not found"}, 404
+                
+                # Check if user is a member
+                if user_id not in channel._members:
+                    print(f"[Channel] User {user_id} not a member of channel {channel_id}")
+                    return {"error": "You must join the channel before sending messages"}, 403
+                
+                # Create message object
+                message = Message(
+                    id=str(uuid.uuid4()),
+                    channel_id=channel_id,
+                    sender_id=user_id,
+                    content=content,
+                    timestamp=time.time()
+                )
+                
+                # Add to channel history
+                if channel.add_message(message):
+                    print(f"[Channel] Message {message.id} from {user_id} saved to channel {channel_id}")
+                    
+                    # TODO: Broadcast notification to online members via WebSocket or P2P
+                    # For now, clients will poll to get new messages
+                    
+                    return {
+                        "success": True,
+                        "message": {
+                            "id": message.id,
+                            "channelId": channel_id,
+                            "senderId": user_id,
+                            "content": content,
+                            "timestamp": message.timestamp
+                        }
+                    }, 201
+                else:
+                    print(f"[Channel] Failed to add message to channel {channel_id}")
+                    return {"error": "Failed to send message"}, 500
             
             else:
                 return {"error": "Invalid endpoint or method"}, 404

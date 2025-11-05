@@ -58,7 +58,9 @@ class Request():
         #: dictionary of HTTP headers.
         self.headers = None
         #: HTTP path
-        self.path = None        
+        self.path = None
+        #: Query parameters from URL
+        self.query_params = {}
         # The cookies set used to create Cookie header
         self.cookies = None
         #: request body to send to the server.
@@ -146,7 +148,22 @@ class Request():
 
         # Prepare the request line from the request header
         self.method, self.path, self.version = self.extract_request_line(request)
+        
+        # Parse query parameters from path
+        if '?' in self.path:
+            path_part, query_part = self.path.split('?', 1)
+            self.path = path_part
+            # Parse query string: key1=value1&key2=value2
+            from urllib.parse import parse_qs
+            parsed = parse_qs(query_part)
+            # parse_qs returns lists, flatten to single values
+            self.query_params = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+        else:
+            self.query_params = {}
+        
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
+        if self.query_params:
+            print("[Request] Query params: {}".format(self.query_params))
         """ "GET /hello HTTP/1.1" -> [Request] GET path /hello version HTTP/1.1  """
         
         if not routes == {}:

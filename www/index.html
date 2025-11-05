@@ -36,9 +36,16 @@
                 
                 <div class="chat-main">
                     <div id="current-channel" class="channel-header">
-                        <h2 id="channel-name">Select a Channel</h2>
-                        <div id="channel-info">
-                            <span id="member-count"></span>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <h2 id="channel-name">Select a Channel</h2>
+                                <div id="channel-info">
+                                    <span id="member-count"></span>
+                                </div>
+                            </div>
+                            <button id="delete-channel-btn" class="delete-btn" style="display: none;" onclick="deleteCurrentChannel()">
+                                Delete Channel
+                            </button>
                         </div>
                     </div>
                     
@@ -77,6 +84,7 @@
     <script>
         let currentUser = null;
         let currentChannel = null;
+        let isDMChannel = false; // Track if current channel is a DM
         const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 
         // Check authentication and initialize app
@@ -169,8 +177,37 @@
                     
                     data.channels.forEach(channel => {
                         const li = document.createElement('li');
-                        li.textContent = channel.name;
+                        
+                        // Display name for channel
+                        let displayName = channel.name;
+                        
+                        // For DM channels, show only the other user's name
+                        if (channel.name.startsWith('DM: ')) {
+                            const dmIcon = document.createElement('span');
+                            dmIcon.textContent = '';
+                            dmIcon.style.marginRight = '5px';
+                            li.appendChild(dmIcon);
+                            
+                            // Extract other user's name from "DM: user1 & user2"
+                            const users = channel.name.replace('DM: ', '').split(' & ');
+                            const otherUser = users.find(u => u !== currentUser) || users[0];
+                            displayName = otherUser;
+                        }
+                        
+                        // Create channel name with member count
+                        const channelName = document.createElement('span');
+                        channelName.textContent = displayName;
+                        channelName.style.fontWeight = '500';
+                        
+                        const memberCount = document.createElement('span');
+                        memberCount.textContent = ` (${channel.memberCount || 0})`;
+                        memberCount.style.fontSize = '0.85rem';
+                        memberCount.style.color = '#65676b';
+                        
+                        li.appendChild(channelName);
+                        li.appendChild(memberCount);
                         li.onclick = () => joinChannel(channel.id);
+                        
                         if (currentChannel && channel.id === currentChannel.id) {
                             li.classList.add('active');
                         }
@@ -188,11 +225,19 @@
                     userList.innerHTML = '';
                     
                     data.peers.forEach(peer => {
+                        // Don't show current user in the list
+                        if (peer.id === currentUser) return;
+                        
                         const li = document.createElement('li');
                         const status = document.createElement('span');
                         status.className = 'user-status online';
                         li.appendChild(status);
                         li.appendChild(document.createTextNode(peer.meta.displayName || peer.id));
+                        
+                        // Add click handler to start DM
+                        li.style.cursor = 'pointer';
+                        li.onclick = () => startDirectMessage(peer.id, peer.meta.displayName || peer.id);
+                        
                         userList.appendChild(li);
                     });
                 })
@@ -213,20 +258,126 @@
             .then(response => response.json())
             .then(data => {
                 currentChannel = data.channel;
-                document.getElementById('channel-name').textContent = currentChannel.name;
-                document.getElementById('member-count').textContent = `${currentChannel.members.length} members`;
+                isDMChannel = currentChannel.name.startsWith('DM: ');
+                
+                // Display name - for DM, show only the other user's name
+                let displayName = currentChannel.name;
+                if (isDMChannel) {
+                    const users = currentChannel.name.replace('DM: ', '').split(' & ');
+                    const otherUser = users.find(u => u !== currentUser) || users[0];
+                    displayName = `{otherUser}`;
+                }
+                
+                document.getElementById('channel-name').textContent = displayName;
+                document.getElementById('member-count').textContent = `${currentChannel.memberCount || currentChannel.members?.length || 0} members`;
                 document.getElementById('message-text').disabled = false;
                 document.querySelector('.send-btn').disabled = false;
+                
+                // Show delete button only if current user is the creator and it's not a DM
+                const deleteBtn = document.getElementById('delete-channel-btn');
+                if (!isDMChannel && currentChannel.createdBy === currentUser) {
+                    deleteBtn.style.display = 'block';
+                } else {
+                    deleteBtn.style.display = 'none';
+                }
+                
                 loadChannels(); // Refresh channel list to show active channel
                 loadChannelMessages();
             })
             .catch(error => console.error('Failed to join channel:', error));
         }
 
+        function startDirectMessage(userId, displayName) {
+            // Create a DM channel name that's consistent regardless of who initiates
+            // Sort usernames alphabetically to ensure same channel ID
+            const users = [currentUser, userId].sort();
+            const dmChannelName = `DM: ${users.join(' & ')}`;
+            const dmChannelId = `dm_${users.join('_')}`;
+            
+            // Check if DM channel already exists
+            fetch('/channels')
+                .then(response => response.json())
+                .then(data => {
+                    const existingDM = data.channels.find(ch => ch.id === dmChannelId);
+                    
+                    if (existingDM) {
+                        // Join existing DM channel
+                        joinChannel(dmChannelId);
+                        isDMChannel = true;
+                    } else {
+                        // Create new DM channel
+                        fetch('/channels/create', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                name: dmChannelName,
+                                createdBy: currentUser,
+                                description: `Direct message between ${currentUser} and ${userId}`,
+                                isPrivate: true,
+                                allowedMembers: [currentUser, userId],
+                                isDM: true,
+                                dmChannelId: dmChannelId
+                            })
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                // Auto-join the other user (this would normally be done via backend)
+                                // For now, they'll see it in their channel list
+                                isDMChannel = true;
+                                joinChannel(data.channel.id);
+                                loadChannels();
+                            } else {
+                                alert('Failed to create DM: ' + (data.error || 'Unknown error'));
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Failed to create DM:', error);
+                            alert('Failed to create direct message');
+                        });
+                    }
+                })
+                .catch(error => console.error('Failed to check channels:', error));
+        }
+
+        function deleteCurrentChannel() {
+            if (!currentChannel) return;
+            
+            if (!confirm(`Are you sure you want to delete channel "${currentChannel.name}"?`)) {
+                return;
+            }
+            
+            fetch(`/channels/delete/${currentChannel.id}`, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Channel deleted successfully');
+                    currentChannel = null;
+                    document.getElementById('channel-name').textContent = 'Select a Channel';
+                    document.getElementById('member-count').textContent = '';
+                    document.getElementById('message-text').disabled = true;
+                    document.querySelector('.send-btn').disabled = true;
+                    document.getElementById('delete-channel-btn').style.display = 'none';
+                    document.getElementById('messages').innerHTML = '';
+                    loadChannels();
+                } else {
+                    alert('Failed to delete channel: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Failed to delete channel:', error);
+                alert('Failed to delete channel');
+            });
+        }
+
         function loadChannelMessages() {
             if (!currentChannel) return;
 
-            fetch(`/channels/messages?channelId=${currentChannel.id}`)
+            fetch(`/channels/messages?channel_id=${currentChannel.id}`)
                 .then(response => response.json())
                 .then(data => {
                     const messagesDiv = document.getElementById('messages');
@@ -238,7 +389,7 @@
                         
                         const senderDiv = document.createElement('div');
                         senderDiv.className = 'sender';
-                        senderDiv.textContent = msg.sender;
+                        senderDiv.textContent = msg.sender === currentUser ? 'You' : msg.sender;
                         
                         const contentDiv = document.createElement('div');
                         contentDiv.className = 'content';
@@ -246,7 +397,10 @@
                         
                         const timeDiv = document.createElement('div');
                         timeDiv.className = 'time';
-                        timeDiv.textContent = new Date(msg.timestamp).toLocaleTimeString();
+                        timeDiv.textContent = new Date(msg.timestamp).toLocaleTimeString('vi-VN', {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        });
                         
                         messageDiv.appendChild(senderDiv);
                         messageDiv.appendChild(contentDiv);
@@ -307,8 +461,7 @@
                 },
                 body: JSON.stringify({
                     channelId: currentChannel.id,
-                    sender: currentUser,
-                    content: message
+                    message: message
                 })
             })
             .then(response => response.json())
@@ -325,6 +478,24 @@
                 loadChannelMessages();
             }
         }, 2000); // Poll every 2 seconds
+
+        // Set up polling for channels and users list
+        setInterval(() => {
+            loadChannels();
+            loadOnlineUsers();
+            // Update member count if in a channel
+            if (currentChannel) {
+                fetch('/channels')
+                    .then(response => response.json())
+                    .then(data => {
+                        const channel = data.channels.find(ch => ch.id === currentChannel.id);
+                        if (channel) {
+                            document.getElementById('member-count').textContent = `${channel.memberCount || 0} members`;
+                        }
+                    })
+                    .catch(error => console.error('Failed to update member count:', error));
+            }
+        }, 5000); // Poll every 5 seconds
     </script>
 </body>
 </html>

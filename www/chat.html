@@ -2,26 +2,44 @@
 <html>
 <head>
     <title>Chat Room</title>
-    <link rel="stylesheet" href="/css/styles.css">
+    <link rel="stylesheet" href="/static/css/chat.css">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <meta charset="UTF-8">
 </head>
 <body>
     <div class="chat-container">
-        <div class="sidebar">
-            <div class="channels">
-                <h3>Channels</h3>
-                <ul id="channel-list"></ul>
-                <button onclick="createChannel()">New Channel</button>
-            </div>
-            <div class="users">
-                <h3>Online Users</h3>
-                <ul id="user-list"></ul>
+        <div class="header">
+            <h2>WeApRous Chat</h2>
+            <div class="user-info">
+                <span>User: <strong id="current-user"></strong></span>
+                <button onclick="logout()" class="logout-btn">Logout</button>
             </div>
         </div>
-        <div class="main-chat">
-            <div id="messages" class="messages"></div>
-            <div class="input-area">
-                <input type="text" id="message-input" placeholder="Type a message...">
-                <button onclick="sendMessage()">Send</button>
+        
+        <div class="content">
+            <div class="sidebar">
+                <div class="channels">
+                    <h3>Channels</h3>
+                    <ul id="channel-list"></ul>
+                    <button onclick="createChannel()" class="btn-primary">+ New Channel</button>
+                </div>
+            </div>
+            
+            <div class="main-chat">
+                <div class="chat-header">
+                    <h3 id="current-channel">Select a channel</h3>
+                </div>
+                <div id="messages" class="messages"></div>
+                <div class="input-area">
+                    <input 
+                        type="text" 
+                        id="message-input" 
+                        placeholder="Type a message..."
+                        onkeypress="handleKeyPress(event)"
+                        disabled
+                    >
+                    <button onclick="sendMessage()" id="send-btn" disabled>Send</button>
+                </div>
             </div>
         </div>
     </div>
