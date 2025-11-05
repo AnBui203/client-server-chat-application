@@ -247,17 +247,6 @@ class HttpAdapter:
             if not auth_cookie or not self.auth_manager.validate_session(auth_cookie):
                 return conn.sendall(ResponseBuilder.unauthorized())
 
-            body_json = json.dumps(body_obj)
-            headers = []
-            headers.append(f"HTTP/1.1 {status_code} {reason}")
-            headers.append("Content-Type: application/json")
-            headers.append(f"Content-Length: {len(body_json.encode('utf-8'))}")
-            headers.append("\r\n")
-            response_bytes = ("\r\n".join(headers)).encode('utf-8') + body_json.encode('utf-8')
-            conn.sendall(response_bytes)
-            conn.close()
-            return
-
         # Handle standard route hooks
         if req.hook:
             print("[HttpAdapter] hook in route-path METHOD {} PATH {}".format(req.hook._route_path,req.hook._route_methods))
@@ -354,7 +343,7 @@ class HttpAdapter:
                         return {"ok": True, "username": username}, 200
                 return {"ok": False}, 401
                 
-            # Channel endpoints
+            # Channel endpoints - List channels
             if req.path == '/channels' and req.method == 'GET':
                 # Get current user ID from auth session
                 sid = self._get_auth_cookie(req)
@@ -376,26 +365,45 @@ class HttpAdapter:
                     } for c in channels]
                 }, 200
                 
+            # Create new channel
             if req.path == '/channels/create' and req.method == 'POST':
                 try:
                     data = json.loads(req.body)
                 except json.JSONDecodeError:
                     return {"error": "Invalid JSON"}, 400
 
-                if not all(field in data for field in ['name', 'createdBy']):
-                    return {"error": "Missing required fields"}, 400
+                # Validate required fields
+                if 'name' not in data:
+                    return {"error": "Missing required field: name"}, 400
+                
+                # Validate name length
+                channel_name = data['name'].strip()
+                if not channel_name or len(channel_name) > 100:
+                    return {"error": "Channel name must be between 1-100 characters"}, 400
+
+                # Get creator ID from auth session
+                sid = self._get_auth_cookie(req)
+                if not sid or not self.auth_manager.validate_session(sid):
+                    return {"error": "Unauthorized"}, 401
+                session = self.auth_manager.sessions[sid]
+                created_by = data.get('createdBy', session.user_id)
 
                 # Generate unique channel ID
                 channel_id = hashlib.sha256(
-                    f"{data['name']}:{time.time()}".encode()
+                    f"{channel_name}:{created_by}:{time.time()}".encode()
                 ).hexdigest()[:12]
+
+                # Validate description length
+                description = data.get('description', '').strip()
+                if len(description) > 500:
+                    return {"error": "Description must be less than 500 characters"}, 400
 
                 # Create channel
                 channel = self.channel_manager.create_channel(
                     channel_id=channel_id,
-                    name=data['name'],
-                    created_by=data['createdBy'],
-                    description=data.get('description', ''),
+                    name=channel_name,
+                    created_by=created_by,
+                    description=description,
                     is_private=data.get('isPrivate', False),
                     allowed_members=data.get('allowedMembers', [])
                 )
@@ -404,6 +412,7 @@ class HttpAdapter:
                     return {"error": "Channel creation failed"}, 500
 
                 return {
+                    "success": True,
                     "channel": {
                         "id": channel.id,
                         "name": channel.name,
@@ -413,35 +422,79 @@ class HttpAdapter:
                     }
                 }, 201
                 
+            # Join existing channel
             if req.path == '/channels/join' and req.method == 'POST':
                 try:
                     data = json.loads(req.body)
                 except json.JSONDecodeError:
                     return {"error": "Invalid JSON"}, 400
 
-                if not all(field in data for field in ['channelId', 'userId']):
-                    return {"error": "Missing required fields"}, 400
+                # Validate required fields
+                if 'channelId' not in data:
+                    return {"error": "Missing required field: channelId"}, 400
+
+                # Get user ID from auth session
+                sid = self._get_auth_cookie(req)
+                if not sid or not self.auth_manager.validate_session(sid):
+                    return {"error": "Unauthorized"}, 401
+                session = self.auth_manager.sessions[sid]
+                user_id = data.get('userId', session.user_id)
 
                 # Get channel
                 channel = self.channel_manager.get_channel(data['channelId'])
                 if not channel:
                     return {"error": "Channel not found"}, 404
 
-                # Get user info
-                peer = self.peer_tracker.get_peer(data['userId'])
+                # Check if already a member - if yes, just return success (allow rejoin after reload)
+                if user_id in channel._members:
+                    print(f"[Channel] User {user_id} is already in channel {channel.id}, allowing rejoin")
+                    return {
+                        "success": True,
+                        "message": "Already in channel",
+                        "channel": {
+                            "id": channel.id,
+                            "name": channel.name,
+                            "description": channel.description,
+                            "members": list(channel.get_members().keys()),
+                            "memberCount": len(channel._members),
+                            "isPrivate": channel.is_private,
+                            "createdBy": channel.created_by
+                        }
+                    }, 200
+
+                # Check private channel access
+                if channel.is_private and user_id not in channel.allowed_members:
+                    return {"error": "Access denied to private channel"}, 403
+
+                # Get user info - try from peer tracker first, fallback to auth manager
+                peer = self.peer_tracker.get_peer(user_id)
                 if not peer:
-                    return {"error": "User not registered"}, 400
+                    # Create peer info from auth session
+                    user_info = self.auth_manager.get_user(user_id)
+                    if user_info:
+                        peer = {
+                            "id": user_id,
+                            "display_name": user_info.get('display_name', user_id),
+                            "ip": "unknown",
+                            "port": 0
+                        }
+                    else:
+                        return {"error": "User not found"}, 400
 
                 # Add member to channel
-                if not channel.add_member(data['userId'], peer):
-                    return {"error": "Failed to join channel"}, 400
+                if not channel.add_member(user_id, peer):
+                    return {"error": "Failed to join channel"}, 500
 
+                print(f"[Channel] User {user_id} successfully joined channel {channel.id}")
                 return {
+                    "success": True,
+                    "message": "Successfully joined channel",
                     "channel": {
                         "id": channel.id,
                         "name": channel.name,
                         "description": channel.description,
                         "members": list(channel.get_members().keys()),
+                        "memberCount": len(channel._members),
                         "isPrivate": channel.is_private,
                         "createdBy": channel.created_by
                     }
@@ -555,84 +608,6 @@ class HttpAdapter:
                 except Exception as e:
                     print(f"[HttpAdapter] Relay failed: {e}")
                     return {"error": "Relay failed", "detail": str(e)}, 500
-                    
-            elif req.path == '/channels' and req.method == 'GET':
-                # List available channels
-                channels = []
-                for channel in self.channel_manager.channels.values():
-                    members = len(channel.get_members())
-                    channels.append({
-                        "id": channel.id,
-                        "name": channel.name,
-                        "description": channel.description,
-                        "created_by": channel.created_by,
-                        "is_private": channel.is_private,
-                        "member_count": members
-                    })
-                return {"channels": channels}, 200
-                
-            elif req.path == '/channels/create' and req.method == 'POST':
-                try:
-                    data = json.loads(req.body)
-                except json.JSONDecodeError:
-                    return {"error": "Invalid JSON"}, 400
-                    
-                required = ['id', 'name', 'created_by']
-                if not all(field in data for field in required):
-                    return {"error": "Missing required fields"}, 400
-                    
-                channel = self.channel_manager.create_channel(
-                    channel_id=data['id'],
-                    name=data['name'],
-                    created_by=data['created_by'],
-                    description=data.get('description', ''),
-                    is_private=data.get('is_private', False),
-                    allowed_members=data.get('allowed_members', [])
-                )
-                
-                if channel:
-                    return {"status": "ok", "channel_id": channel.id}, 201
-                else:
-                    return {"error": "Channel creation failed"}, 400
-                    
-            elif req.path == '/channels/join' and req.method == 'POST':
-                try:
-                    data = json.loads(req.body)
-                except json.JSONDecodeError:
-                    return {"error": "Invalid JSON"}, 400
-                    
-                if 'channelId' not in data or 'userId' not in data:
-                    return {"error": "Missing channelId or userId"}, 400
-                    
-                channel = self.channel_manager.get_channel(data['channelId'])
-                if not channel:
-                    return {"error": "Channel not found"}, 404
-                    
-                # Get peer info
-                peer = None
-                for p in self.peer_tracker.get_active_peers():
-                    if p['id'] == data['peer_id']:
-                        peer = p
-                        break
-                        
-                if not peer:
-                    return {"error": "Peer not found"}, 404
-                                        
-                if channel.add_member(data['peer_id'], peer):
-                    return {
-                        "status": "ok", 
-                        "message": "Successfully joined channel",
-                        "channel": {
-                            "id": channel.id,
-                            "name": channel.name,
-                            "created_by": channel.created_by,
-                            "description": channel.description,
-                            "is_private": channel.is_private,
-                            "allowed_members": channel.allowed_members
-                        }
-                    }, 200
-                else:
-                    return {"error": "Join failed"}, 400
                     
             elif req.path == '/channels/leave' and req.method == 'POST':
                 try:

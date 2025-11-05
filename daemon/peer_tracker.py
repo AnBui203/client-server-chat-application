@@ -51,15 +51,16 @@ class PeerTracker:
                 return True
             return False
     
-        def get_peer(self, peer_id: str) -> dict:
-            """
-            Get information about a specific peer
+    def get_peer(self, peer_id: str) -> dict:
+        """
+        Get information about a specific peer
         
-            :param peer_id: ID of the peer to get information for
-            :return: Dictionary containing peer information or None if not found
-            """
-            with self.lock:
-                return self.peers.get(peer_id)
+        :param peer_id: ID of the peer to get information for
+        :return: Dictionary containing peer information or None if not found
+        """
+        with self.lock:
+            return self.peers.get(peer_id)
+    
     def update_peer_timestamp(self, peer_id: str) -> bool:
         """
         Update last_seen timestamp for a peer (used for heartbeat)

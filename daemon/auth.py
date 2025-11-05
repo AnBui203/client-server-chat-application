@@ -189,3 +189,15 @@ class ResponseBuilder:
             ""
         ]
         return "\r\n".join(response).encode()
+    
+    @staticmethod
+    def bad_request(body: str = "400 Bad Request") -> bytes:
+        """Build 400 Bad Request response"""
+        response = [
+            "HTTP/1.1 400 Bad Request",
+            "Content-Type: text/html",
+            f"Content-Length: {len(body)}",
+            "",
+            body
+        ]
+        return "\r\n".join(response).encode()
