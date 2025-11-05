@@ -118,26 +118,24 @@ class Request():
         # First line
         first_line = request.split('\r\n')[0]
 
-        # Headers
-        lines = request.split('\r\n')
-        headers = {}  # ??? dictionary.py???? có tác dụng gì?? dùng dictionary của python???
-        for line in lines[1:]:
+        # Split headers and body using CRLF CRLF
+        parts = request.split('\r\n\r\n', 1)
+        header_block = parts[0]
+        body = parts[1] if len(parts) > 1 else ""
+
+        # Parse header lines (stop at blank line)
+        header_lines = header_block.split('\r\n')
+        headers = {}
+        # header_lines[0] is the request line
+        for line in header_lines[1:]:
             if ': ' in line:
                 key, val = line.split(': ', 1)
                 headers[key.lower()] = val
+        # Debug print
         print(headers)
 
-        # Body
-        content_type = headers.get('content-type')
-
-        part = request.split('r\n\r\n')
-        body = part[1] if len(part) > 1 else ""
-        if content_type == "application/x-www-form-urlencoded":
-            self.body = urlencode(body)
-        elif content_type == "application/json":
-            self.body = jsonlib.dumps(body)
-        elif content_type == "multipart/form-data":
-            self.body = body
+        # Keep the raw body string. Higher-level handlers will parse JSON if needed.
+        self.body = body
 
         return first_line, headers, body
 

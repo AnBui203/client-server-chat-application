@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat Room</title>
+    <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+    <div class="chat-container">
+        <div class="sidebar">
+            <div class="channels">
+                <h3>Channels</h3>
+                <ul id="channel-list"></ul>
+                <button onclick="createChannel()">New Channel</button>
+            </div>
+            <div class="users">
+                <h3>Online Users</h3>
+                <ul id="user-list"></ul>
+            </div>
+        </div>
+        <div class="main-chat">
+            <div id="messages" class="messages"></div>
+            <div class="input-area">
+                <input type="text" id="message-input" placeholder="Type a message...">
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+    <script src="/static/js/chat.js"></script>
+</body>
+</html>

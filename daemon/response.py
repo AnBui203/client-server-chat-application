@@ -158,14 +158,14 @@ class Response():
         if main_type == 'text':
             # self.headers['Content-Type']='text/{}'.format(sub_type)
             if sub_type == 'plain' or sub_type == 'css':
-                base_dir = BASE_DIR+"static/"
+                base_dir = BASE_DIR
             elif sub_type == 'html':
                 base_dir = BASE_DIR+"www/"
             else:
                 base_dir = self.handle_text_other()
 
         elif main_type == 'image' or main_type == 'video':
-            base_dir = BASE_DIR+"static/"
+            base_dir = BASE_DIR
             # self.headers['Content-Type']='image/{}'.format(sub_type)
 
         elif main_type == 'application':
@@ -230,6 +230,15 @@ class Response():
         if not self.reason:
             self.reason = "OK"
 
+        # Set correct Content-Type for CSS files
+        if 'Content-Type' not in self.headers:
+            if request.path.endswith('.css'):
+                self.headers['Content-Type'] = 'text/css'
+            elif request.path.endswith('.js'):
+                self.headers['Content-Type'] = 'application/javascript'
+            else:
+                self.headers['Content-Type'] = 'text/html'
+
         status_line = f"HTTP/1.1 {self.status_code} {self.reason}\r\n"
         #Build dynamic headers
         headers = {
@@ -237,7 +246,7 @@ class Response():
                 "Accept-Language": "{}".format(reqhdr.get("Accept-Language", "en-US,en;q=0.9")),
                 "Authorization": "{}".format(reqhdr.get("Authorization", "Basic <credentials>")),
                 "Cache-Control": "no-cache",
-                "Content-Type": "{}".format(self.headers['Content-Type']),
+                "Content-Type": self.headers.get('Content-Type', 'text/html'),
                 "Content-Length": "{}".format(len(self._content)),
 #                "Cookie": "{}".format(reqhdr.get("Cookie", "sessionid=xyz789")), #dummy cooki
         #

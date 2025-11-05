@@ -1,21 +1,330 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 <head>
-    <title>bksysnet@hcmut welcome</title>
-
-    <meta charset="utf-8" />
-    <meta http-equiv="Content-type" content="text/html; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="stylesheet" href="css/styles.css" />
+    <title>Chat Application</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/chat.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-
 <body>
-<div>
-    <h1>bksysnet@hcmut  Domain</h1>
-    <p>This domain is for use in illustrative examples in documents.
-    </p>
-  
-       <img src="images/welcome.jpg" alt="bksysnet at HCMUT" width="500" height="600">  
-</div>
+    <div id="app">
+        <header>
+            <h1>Chat Application</h1>
+            <div class="user-controls">
+                <span id="username-display"></span>
+                <a href="/logout" class="logout-btn">Logout</a>
+            </div>
+        </header>
+        
+        <main>
+            <div class="chat-container">
+                <div class="sidebar">
+                    <div class="channel-section">
+                        <h2>Channels</h2>
+                        <button id="create-channel-btn" class="primary-btn">Create Channel</button>
+                        <ul id="channel-list" class="channel-list">
+                            <!-- Channels will be populated here -->
+                        </ul>
+                    </div>
+                    <div class="users-section">
+                        <h2>Online Users</h2>
+                        <ul id="user-list" class="user-list">
+                            <!-- Online users will be populated here -->
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="chat-main">
+                    <div id="current-channel" class="channel-header">
+                        <h2 id="channel-name">Select a Channel</h2>
+                        <div id="channel-info">
+                            <span id="member-count"></span>
+                        </div>
+                    </div>
+                    
+                    <div id="messages" class="messages">
+                        <!-- Messages will appear here -->
+                    </div>
+                    
+                    <div class="message-input">
+                        <form id="message-form">
+                            <input type="text" id="message-text" placeholder="Type your message..." disabled>
+                            <button type="submit" class="send-btn" disabled>Send</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal for creating new channel -->
+    <div id="create-channel-modal" class="modal">
+        <div class="modal-content">
+            <h2>Create New Channel</h2>
+            <form id="create-channel-form">
+                <div class="form-group">
+                    <label for="channel-name-input">Channel Name:</label>
+                    <input type="text" id="channel-name-input" required>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="secondary-btn" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="primary-btn">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        let currentUser = null;
+        let currentChannel = null;
+        const HEARTBEAT_INTERVAL = 30000; // 30 seconds
+
+        // Check authentication and initialize app
+        fetch('/api/check-auth')
+            .then(response => {
+                if (!response.ok) {
+                    window.location.href = '/login.html';
+                    return;
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data && data.username) {
+                    currentUser = data.username;
+                    document.getElementById('username-display').textContent = data.username;
+                    initializeChat();
+                }
+            })
+            .catch(error => {
+                console.error('Auth check failed:', error);
+                window.location.href = '/login.html';
+            });
+
+        // Initialize chat functionality
+        function initializeChat() {
+            // Connect to chat server
+            fetch('/api/connect')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Connected to chat server');
+                    registerUser();
+                })
+                .catch(error => {
+                    console.error('Failed to connect:', error);
+                });
+        }
+
+        function registerUser() {
+            const data = {
+                id: currentUser,
+                ip: window.location.hostname,
+                port: window.location.port,
+                meta: {
+                    displayName: currentUser
+                }
+            };
+
+            fetch('/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Registered as user:', currentUser);
+                startHeartbeat();
+                loadChannels();
+                loadOnlineUsers();
+            })
+            .catch(error => {
+                console.error('Registration failed:', error);
+            });
+        }
+
+        function startHeartbeat() {
+            // Send heartbeat every 30 seconds
+            setInterval(() => {
+                fetch('/heartbeat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        id: currentUser
+                    })
+                })
+                .then(() => loadOnlineUsers()) // Refresh user list after heartbeat
+                .catch(error => console.error('Heartbeat failed:', error));
+            }, HEARTBEAT_INTERVAL);
+        }
+
+        function loadChannels() {
+            fetch('/channels')
+                .then(response => response.json())
+                .then(data => {
+                    const channelList = document.getElementById('channel-list');
+                    channelList.innerHTML = '';
+                    
+                    data.channels.forEach(channel => {
+                        const li = document.createElement('li');
+                        li.textContent = channel.name;
+                        li.onclick = () => joinChannel(channel.id);
+                        if (currentChannel && channel.id === currentChannel.id) {
+                            li.classList.add('active');
+                        }
+                        channelList.appendChild(li);
+                    });
+                })
+                .catch(error => console.error('Failed to load channels:', error));
+        }
+
+        function loadOnlineUsers() {
+            fetch('/peers')
+                .then(response => response.json())
+                .then(data => {
+                    const userList = document.getElementById('user-list');
+                    userList.innerHTML = '';
+                    
+                    data.peers.forEach(peer => {
+                        const li = document.createElement('li');
+                        const status = document.createElement('span');
+                        status.className = 'user-status online';
+                        li.appendChild(status);
+                        li.appendChild(document.createTextNode(peer.meta.displayName || peer.id));
+                        userList.appendChild(li);
+                    });
+                })
+                .catch(error => console.error('Failed to load users:', error));
+        }
+
+        function joinChannel(channelId) {
+            fetch('/channels/join', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    channelId: channelId,
+                    userId: currentUser
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                currentChannel = data.channel;
+                document.getElementById('channel-name').textContent = currentChannel.name;
+                document.getElementById('member-count').textContent = `${currentChannel.members.length} members`;
+                document.getElementById('message-text').disabled = false;
+                document.querySelector('.send-btn').disabled = false;
+                loadChannels(); // Refresh channel list to show active channel
+                loadChannelMessages();
+            })
+            .catch(error => console.error('Failed to join channel:', error));
+        }
+
+        function loadChannelMessages() {
+            if (!currentChannel) return;
+
+            fetch(`/channels/messages?channelId=${currentChannel.id}`)
+                .then(response => response.json())
+                .then(data => {
+                    const messagesDiv = document.getElementById('messages');
+                    messagesDiv.innerHTML = '';
+                    
+                    data.messages.forEach(msg => {
+                        const messageDiv = document.createElement('div');
+                        messageDiv.className = `message${msg.sender === currentUser ? ' own' : ''}`;
+                        
+                        const senderDiv = document.createElement('div');
+                        senderDiv.className = 'sender';
+                        senderDiv.textContent = msg.sender;
+                        
+                        const contentDiv = document.createElement('div');
+                        contentDiv.className = 'content';
+                        contentDiv.textContent = msg.content;
+                        
+                        const timeDiv = document.createElement('div');
+                        timeDiv.className = 'time';
+                        timeDiv.textContent = new Date(msg.timestamp).toLocaleTimeString();
+                        
+                        messageDiv.appendChild(senderDiv);
+                        messageDiv.appendChild(contentDiv);
+                        messageDiv.appendChild(timeDiv);
+                        messagesDiv.appendChild(messageDiv);
+                    });
+                    
+                    // Scroll to bottom
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                })
+                .catch(error => console.error('Failed to load messages:', error));
+        }
+
+        function closeModal() {
+            document.getElementById('create-channel-modal').style.display = 'none';
+        }
+
+        // Event Listeners
+        document.getElementById('create-channel-btn').addEventListener('click', () => {
+            document.getElementById('create-channel-modal').style.display = 'block';
+        });
+
+        document.getElementById('create-channel-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const channelName = document.getElementById('channel-name-input').value;
+            
+            fetch('/channels/create', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    name: channelName,
+                    createdBy: currentUser
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                loadChannels();
+                closeModal();
+                document.getElementById('channel-name-input').value = '';
+            })
+            .catch(error => console.error('Failed to create channel:', error));
+        });
+
+        document.getElementById('message-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            if (!currentChannel) return;
+
+            const messageInput = document.getElementById('message-text');
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            fetch('/channels/messages', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    channelId: currentChannel.id,
+                    sender: currentUser,
+                    content: message
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                messageInput.value = '';
+                loadChannelMessages();
+            })
+            .catch(error => console.error('Failed to send message:', error));
+        });
+
+        // Set up polling for new messages
+        setInterval(() => {
+            if (currentChannel) {
+                loadChannelMessages();
+            }
+        }, 2000); // Poll every 2 seconds
+    </script>
 </body>
 </html>
